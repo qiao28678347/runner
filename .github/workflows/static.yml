@@ -33,7 +33,7 @@ jobs:
       - name: 创建版本并上传
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.跨账号令牌 }}
+          token: ${{ secrets.WY_SECRET }}
           tag_name: test-${{ github.run_id }}
           name: "测试发布 ${{ github.run_id }}"
           files: |
