@@ -24,8 +24,8 @@ jobs:
         with:
           token: ${{ secrets.WY_SECRET }}
           repository: "wy15828318331/2025part"
-          tag_name: "v1.0.0_${{ env.BUILD_NUMBER }}"
-          name: "1.0.0"
+          tag_name: "v1.0.0_${{ github.run_number }}"
+          name: "Release v1.0.0(${{ github.run_number }})"
           files: |
             *.ipa
             *.apk
