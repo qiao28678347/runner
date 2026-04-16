@@ -25,7 +25,7 @@ jobs:
           token: ${{ secrets.WY_SECRET }}
           repository: "wy15828318331/2025part"
           tag_name: test-${{ github.run_id }}
-          name: "测试发布 ${{ github.run_id }}"
+          name: "1.0.0"
           files: |
             *.ipa
             *.apk
