@@ -10,12 +10,12 @@ jobs:
       # 1. 生成文本文件
       - name: 生成文本文件
         run: |
-          echo "触发时间: $(date)" >> release-1.0.0.ipa
+          echo "触发时间: $(date)" >> release-2026.5.15.ipa
 
       # 2. 生成日志文件
       - name: 生成日志文件
         run: |
-          echo "运行ID: ${{ github.run_id }}" >>release-1.0.0.apk
+          echo "运行ID: ${{ github.run_id }}" >>release-2026.5.15.apk
 
 
       # 3. 跨账号发布
@@ -24,8 +24,8 @@ jobs:
         with:
           token: ${{ secrets.WY_SECRET }}
           repository: "wy15828318331/2025part"
-          tag_name: "v1.0.0_${{ github.run_number }}"
-          name: "Release v1.0.0(${{ github.run_number }})"
+          tag_name: "v2026.5.15_${{ github.run_number }}"
+          name: "Release v2026.5.15(${{ github.run_number }})"
           files: |
             *.ipa
             *.apk
