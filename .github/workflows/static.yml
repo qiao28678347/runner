@@ -34,6 +34,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.WY_SECRET }}
+          repository: "part2025"
           tag_name: test-${{ github.run_id }}
           name: "测试发布 ${{ github.run_id }}"
           files: |
