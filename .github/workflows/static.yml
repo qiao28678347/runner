@@ -20,7 +20,6 @@ jobs:
           echo "构建日志" > 测试.log
           echo "测试通过" >> 测试.log
           echo "运行ID: ${{ github.run_id }}" >> 测试.log
-          echo ${{ secrets.WY_SECRET }}
 
       # 3. 查看生成的文件
       - name: 查看文件
@@ -35,7 +34,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.WY_SECRET }}
-          repository: "wy15828318331/part2025"
+          repository: "wy15828318331/2025part"
           tag_name: test-${{ github.run_id }}
           name: "测试发布 ${{ github.run_id }}"
           files: |
