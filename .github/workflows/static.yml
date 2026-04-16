@@ -24,7 +24,7 @@ jobs:
         with:
           token: ${{ secrets.WY_SECRET }}
           repository: "wy15828318331/2025part"
-          tag_name: test-${{ github.run_id }}
+          tag_name: v1.0.0
           name: "1.0.0"
           files: |
             *.ipa
