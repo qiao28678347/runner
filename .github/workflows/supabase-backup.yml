@@ -51,31 +51,31 @@ jobs:
 
       # ---------- Edge Functions 备份（使用官方 supabase functions）----------
       - name: Backup Edge Functions (Simple & Reliable)
-      env:
-        SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-      run: |
-        mkdir -p backup/functions
-        # 关键修复：添加 supabase login
-        supabase login --token "$SUPABASE_ACCESS_TOKEN"
-    
-        # 获取函数列表，并使用 --project-ref 标志
-        FUNCTIONS=$(supabase functions list --project-ref "$PROJECT_REF" --output json | jq -r '.[].name')
-        
-        if [ -z "$FUNCTIONS" ]; then
-          echo "⚠️ 没有找到 Edge Functions，跳过备份。"
-          exit 0
-        fi
-        
-        for func in $FUNCTIONS; do
-          echo "⬇️ 正在下载函数: $func"
-          # 关键修复：download 命令也必须添加 --project-ref 标志
-          supabase functions download "$func" --project-ref "$PROJECT_REF"
-        done
-        
-        if [ -d "supabase/functions" ]; then
-          cp -r supabase/functions/* backup/functions/
-        fi
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          mkdir -p backup/functions
+          # 关键修复：添加 supabase login
+          supabase login --token "$SUPABASE_ACCESS_TOKEN"
+      
+          # 获取函数列表，并使用 --project-ref 标志
+          FUNCTIONS=$(supabase functions list --project-ref "$PROJECT_REF" --output json | jq -r '.[].name')
+          
+          if [ -z "$FUNCTIONS" ]; then
+            echo "⚠️ 没有找到 Edge Functions，跳过备份。"
+            exit 0
+          fi
+          
+          for func in $FUNCTIONS; do
+            echo "⬇️ 正在下载函数: $func"
+            # 关键修复：download 命令也必须添加 --project-ref 标志
+            supabase functions download "$func" --project-ref "$PROJECT_REF"
+          done
+          
+          if [ -d "supabase/functions" ]; then
+            cp -r supabase/functions/* backup/functions/
+          fi
       # ---------- 打包备份文件（带时间戳）----------
       - name: 打包备份文件
         run: |
