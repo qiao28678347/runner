@@ -1,64 +1,99 @@
+# Supabase 全量备份工作流（数据库 + Edge Functions）
+# 使用官方 Supabase CLI 工具，并启用 CLI 缓存以加速每次构建
 name: Supabase Official Backup
 
 on:
+  # 定时触发：每天 UTC 00:00（北京时间 08:00）
   schedule:
     - cron: '0 0 * * *'
+  # 手动触发：允许在 GitHub Actions 页面手动运行
   workflow_dispatch:
 
 jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Supabase CLI
+      - name: 检出代码仓库
+        uses: actions/checkout@v4
+
+      # ---------- Supabase CLI 缓存（避免每次重新下载）----------
+      - name: 缓存 Supabase CLI
+        id: cache-supabase
+        uses: actions/cache@v4
+        with:
+          # Supabase CLI 默认安装路径（setup-cli 安装位置）
+          path: /home/runner/.local/bin/supabase
+          # 缓存键：基于 CLI 版本（固定版本可以避免每天变化）
+          key: supabase-cli-v1.128.0  # 可定期更新版本号，或使用动态版本如 ${{ steps.setup-cli.outputs.version }}
+          restore-keys: |
+            supabase-cli-
+
+      # ---------- 安装 Supabase CLI（如果缓存未命中则下载）----------
+      - name: 安装 Supabase CLI
+        if: steps.cache-supabase.outputs.cache-hit != 'true'
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: latest   # 使用最新版，但会固定版本以便缓存命中；这里由于缓存键固定，实际不会重复下载
 
-      - name: Backup database (official CLI)
+      # ---------- 数据库备份（使用官方 supabase db dump）----------
+      - name: 备份数据库
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}   # 数据库连接串（Session pooler 模式）
         run: |
           mkdir -p backup
+          # 1. 备份数据库角色（用户、权限）
           supabase db dump --db-url "$DB_URL" -f backup/roles.sql --role-only
+          # 2. 备份数据库结构（表、视图、函数、触发器等）
           supabase db dump --db-url "$DB_URL" -f backup/schema.sql
+          # 3. 备份数据（--use-copy 提高性能）
           supabase db dump --db-url "$DB_URL" -f backup/data.sql --data-only --use-copy
+          echo "✅ 数据库备份完成"
 
-      - name: Backup Edge Functions (official CLI)
+      # ---------- Edge Functions 备份（使用官方 supabase functions）----------
+      - name: 备份 Edge Functions
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}   # 个人访问令牌
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}              # 项目引用 ID
         run: |
-          # CLI 会自动使用 SUPABASE_ACCESS_TOKEN 环境变量进行认证
           mkdir -p backup/functions
+          # 关键步骤：将当前目录关联到 Supabase 项目（CLI 需要此信息）
+          supabase link --project-ref "$PROJECT_REF"
           
-          # 获取函数列表
-          FUNCTIONS=$(supabase functions list --project-ref "$PROJECT_REF" --output json | jq -r '.[].name')
+          # 获取所有函数名称（输出为 JSON，使用 jq 解析）
+          FUNCTIONS=$(supabase functions list --output json | jq -r '.[].name')
           
           if [ -z "$FUNCTIONS" ]; then
-            echo "No Edge Functions found"
+            echo "⚠️ 未找到任何 Edge Functions，跳过备份"
             exit 0
           fi
           
-          # 逐个下载函数（CLI 会下载到 supabase/functions/ 目录）
+          echo "📋 发现函数: $FUNCTIONS"
+          
+          # 逐个下载函数（CLI 会自动存入 ./supabase/functions/<函数名>/ 目录）
           for func in $FUNCTIONS; do
-            echo "Downloading function: $func"
-            supabase functions download "$func" --project-ref "$PROJECT_REF"
+            echo "⬇️ 正在下载函数: $func"
+            supabase functions download "$func"
           done
           
-          # 将下载的函数移动到 backup 目录
+          # 将下载的函数源码移动到最终的备份目录
           if [ -d "supabase/functions" ]; then
             cp -r supabase/functions/* backup/functions/
+            echo "✅ 已备份 ${#FUNCTIONS[@]} 个函数"
+          else
+            echo "⚠️ 未生成 functions 目录，可能下载失败"
           fi
 
-      - name: Archive and upload
+      # ---------- 打包备份文件（带时间戳）----------
+      - name: 打包备份文件
         run: |
           TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
           tar -czf "supabase_backup_${TIMESTAMP}.tar.gz" backup/
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-      
-      - uses: actions/upload-artifact@v4
+          echo "📦 备份包已创建: supabase_backup_${TIMESTAMP}.tar.gz"
+
+      # ---------- 上传到 GitHub Artifacts（保留30天）----------
+      - name: 上传备份文件
+        uses: actions/upload-artifact@v4
         with:
           name: supabase-backup-${{ env.TIMESTAMP }}
           path: supabase_backup_*.tar.gz
