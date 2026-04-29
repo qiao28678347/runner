@@ -1,20 +1,83 @@
-name: Supabase Backup
+# ==============================================
+# Supabase 全自动备份脚本（免费版专用）
+# 备份内容：数据库全量数据 + 函数 + 触发器 + 视图 + 云函数
+# 自动每天执行，手动也能触发
+# ==============================================
+name: Supabase 全量自动备份
+
+# 触发条件：
+# 1. 每天 UTC 20:00（北京时间 04:00）自动执行
+# 2. 支持手动点击 Run workflow 触发
 on:
-  
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:  # 允许手动触发备份（非常重要）
+
+# 备份任务
 jobs:
   backup:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # 防止卡死
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Install PostgreSQL Client
-        run: sudo apt install -y postgresql-client
-      - name: Run pg_dump
-        env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # 在仓库Secrets中配置
+      - name: 拉取代码（用于保存云函数）
+        uses: actions/checkout@v4
+
+      # ==============================================
+      # 安装依赖：PostgreSQL 客户端（用于 pg_dump）
+      # ==============================================
+      - name: 安装 PostgreSQL 客户端
         run: |
-          pg_dump "$DB_URL" > backup_$(date +%Y%m%d_%H%M%S).sql
-      - name: Upload Backup
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      # ==============================================
+      # 生成时间戳（备份文件命名用）
+      # ==============================================
+      - name: 生成时间戳
+        id: time
+        run: echo "timestamp=$(date +%Y-%m-%d_%H-%M-%S)" >> $GITHUB_OUTPUT
+
+      # ==============================================
+      # 步骤1：备份 数据库全量（数据+函数+触发器+视图+约束）
+      # 这是最完整的 pg_dump 命令
+      # ==============================================
+      - name: 备份 Supabase 数据库
+        env:
+          # 你只需要在 GitHub 配置这个密钥：SUPABASE_DB_URL
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          pg_dump \
+            --no-owner \
+            --no-privileges \
+            --blobs \
+            --encoding=utf8 \
+            --if-exists \
+            --clean \
+            "$DATABASE_URL" > supabase_db_full_${{ steps.time.outputs.timestamp }}.sql
+
+      # ==============================================
+      # 步骤2：备份 云函数 Edge Functions
+      # 会把 ./functions 整个目录打包
+      # ==============================================
+      - name: 打包云函数
+        run: |
+          if [ -d "./functions" ]; then
+            zip -r supabase_functions_${{ steps.time.outputs.timestamp }}.zip ./functions
+            echo "已备份云函数"
+          else
+            echo "未检测到云函数，跳过"
+            touch supabase_functions_${{ steps.time.outputs.timestamp }}.zip
+          fi
+
+      # ==============================================
+      # 步骤3：上传备份文件到 GitHub（永久保存，可下载）
+      # ==============================================
+      - name: 上传备份文件
         uses: actions/upload-artifact@v4
         with:
-          name: supabase-backup
-          path: *.sql
+          name: supabase-backup-${{ steps.time.outputs.timestamp }}
+          path: |
+            *.sql
+            *.zip
+          retention-days: 90  # 保存90天（可改 365）
