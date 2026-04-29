@@ -50,38 +50,32 @@ jobs:
           echo "✅ 数据库备份完成"
 
       # ---------- Edge Functions 备份（使用官方 supabase functions）----------
-      - name: 备份 Edge Functions（最稳妥组合方案）
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-        run: |
-          mkdir -p backup/functions
-          
-          # 1. 初始化项目（生成必要的配置文件 supabase/config.toml）
-          supabase init
-          
-          # 2. 链接项目（现在 link 应该能成功了）
-          supabase link --project-ref "$PROJECT_REF"
+      - name: Backup Edge Functions (Simple & Reliable)
+      env:
+        SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+      run: |
+        mkdir -p backup/functions
+        # 关键修复：添加 supabase login
+        supabase login --token "$SUPABASE_ACCESS_TOKEN"
+    
+        # 获取函数列表，并使用 --project-ref 标志
+        FUNCTIONS=$(supabase functions list --project-ref "$PROJECT_REF" --output json | jq -r '.[].name')
         
-          # 3. 获取并下载函数（这里仍带上 --project-ref 作为双重保障）
-          FUNCTIONS=$(supabase functions list --project-ref "$PROJECT_REF" --output json | jq -r '.[].name')
-          
-          if [ -z "$FUNCTIONS" ]; then
-            echo "⚠️ 未找到任何 Edge Functions，跳过备份"
-            exit 0
-          fi
-          
-          echo "📋 发现函数: $FUNCTIONS"
-          
-          for func in $FUNCTIONS; do
-            echo "⬇️ 正在下载函数: $func"
-            supabase functions download "$func" --project-ref "$PROJECT_REF"
-          done
-          
-          if [ -d "supabase/functions" ]; then
-            cp -r supabase/functions/* backup/functions/
-          fi
-
+        if [ -z "$FUNCTIONS" ]; then
+          echo "⚠️ 没有找到 Edge Functions，跳过备份。"
+          exit 0
+        fi
+        
+        for func in $FUNCTIONS; do
+          echo "⬇️ 正在下载函数: $func"
+          # 关键修复：download 命令也必须添加 --project-ref 标志
+          supabase functions download "$func" --project-ref "$PROJECT_REF"
+        done
+        
+        if [ -d "supabase/functions" ]; then
+          cp -r supabase/functions/* backup/functions/
+        fi
       # ---------- 打包备份文件（带时间戳）----------
       - name: 打包备份文件
         run: |
