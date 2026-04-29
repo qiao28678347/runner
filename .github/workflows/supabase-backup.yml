@@ -1,4 +1,4 @@
-name: Supabase 全量备份（数据库 + 在线 Edge Functions）
+name: Supabase 全量备份（DB + Edge Functions）
 on:
   workflow_dispatch:  # 手动点击备份
   schedule:
@@ -7,45 +7,39 @@ on:
 jobs:
   backup:
     runs-on: ubuntu-latest
-    container: postgres:17-alpine
-
     steps:
       - uses: actions/checkout@v4
 
-      # 安装依赖
-      - name: 安装依赖
-        run: |
-          apk add --no-cache zip curl nodejs npm
+      # 安装依赖（无 npm，无报错）
+      - name: Install dependencies
+        run: sudo apt-get install -y curl zip
 
-      # 安装 Supabase CLI
-      - name: 安装 Supabase CLI
-        run: npm install -g supabase
+      # 安装 Supabase CLI 官方方式（无 npm，彻底解决错误）
+      - name: Install Supabase CLI
+        run: |
+          curl -sSL https://supabase.com/cli/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       # 生成时间戳
-      - name: 生成时间戳
+      - name: Generate timestamp
         id: time
         run: echo "timestamp=$(date +%Y-%m-%d_%H-%M-%S)" >> $GITHUB_OUTPUT
 
       # ===============================
-      # 1. 备份数据库（完整）
+      # 1. 备份数据库（已修复版本问题）
       # ===============================
-      - name: 备份数据库
+      - name: Backup full database
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          pg_dump \
-            --no-owner \
-            --no-privileges \
-            --blobs \
-            --encoding=utf8 \
-            --if-exists \
-            --clean \
-            "$DATABASE_URL" > db_${{ steps.time.outputs.timestamp }}.sql
+          pg_dump "$DB_URL" \
+            --no-owner --no-privileges --clean --if-exists \
+            > db_backup_${{ steps.time.outputs.timestamp }}.sql
 
       # ===============================
-      # 2. 拉取 在线 Edge Functions（真正备份云端函数）
+      # 2. 备份云端 Edge Functions（真正可用）
       # ===============================
-      - name: 备份在线 Edge Functions
+      - name: Backup Edge Functions from Supabase cloud
         env:
           SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -53,18 +47,16 @@ jobs:
           mkdir -p functions
           supabase functions pull --project-ref "$SUPABASE_PROJECT_ID"
 
-      # 打包云端函数
-      - name: 打包函数
+      - name: Zip Edge Functions
         run: zip -r functions_${{ steps.time.outputs.timestamp }}.zip ./functions
 
       # ===============================
-      # 3. 上传所有备份
+      # 3. 上传备份文件
       # ===============================
-      - name: 上传备份文件
+      - name: Upload all backups
         uses: actions/upload-artifact@v4
         with:
           name: supabase-backup-${{ steps.time.outputs.timestamp }}
           path: |
             *.sql
             *.zip
-          retention-days: 90
