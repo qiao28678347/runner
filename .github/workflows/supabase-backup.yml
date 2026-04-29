@@ -40,7 +40,7 @@ jobs:
         env:
           DB_URL: ${{ secrets.SUPABASE_DB_URL }}   # 数据库连接串（Session pooler 模式）
         run: |
-          mkdir -p backup
+          mkdir -p backup/sql
           # 1. 备份数据库角色（用户、权限）
           supabase db dump --db-url "$DB_URL" -f backup/sql/roles.sql --role-only
           # 2. 备份数据库结构（表、视图、函数、触发器等）
@@ -55,7 +55,7 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_ID }}
         run: |
-          mkdir -p backup/functions
+          mkdir -p backup/supabase/functions
           # 关键修复：添加 supabase login
           supabase login --token "$SUPABASE_ACCESS_TOKEN"
       
