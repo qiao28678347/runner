@@ -1,47 +1,74 @@
+# GitHub Actions 工作流名称：Supabase 全量备份（单文件+Edge Functions）
 name: Supabase Full Backup (Single File)
 
+# 触发条件配置
 on:
+  # 定时触发：每天 UTC 时间 00:00 运行（对应北京时间早上 8:00）
   schedule:
-    - cron: '0 0 * * *'   # 每天 UTC 00:00
+    - cron: '0 0 * * *'
+  # 手动触发：允许在 GitHub Actions 页面点击按钮手动运行
   workflow_dispatch:
 
+# 作业定义
 jobs:
+  # 作业名称：全量备份
   full-backup:
+    # 运行环境：最新版 Ubuntu（GitHub 提供的虚拟环境）
     runs-on: ubuntu-latest
+    # 权限设置：仅当需要自动提交到仓库时启用写入权限（此处保留但不启用）
     permissions:
-      contents: write      # 仅当需要自动 commit 时使用（默认关闭）
+      contents: write   # 如需自动 commit 备份文件到仓库，请取消后续步骤注释并确保仓库为私有
 
+    # 作业步骤列表
     steps:
-      - name: 🛒 Checkout repository
+      # 步骤1：检出仓库代码（以便后续可以 commit 或存储文件）
+      - name: 🛒 检出代码仓库
         uses: actions/checkout@v4
 
-      # ---------- 安装依赖 ----------
-      - name: 🔧 Install PostgreSQL client (pg_dump & psql)
+      # ---------- 安装必需工具 ----------
+      # 步骤2：安装 PostgreSQL 17 客户端（pg_dump 和 psql）
+      # 说明：Supabase 当前使用的 PostgreSQL 版本为 17.6，必须使用匹配的客户端版本，否则会报 server version mismatch
+      - name: 🔧 安装 PostgreSQL 17 客户端
         run: |
+          # 更新软件包列表
           sudo apt-get update
-          sudo apt-get install -y postgresql-client-16 jq
+          # 安装 wget 和 gnupg 用于添加第三方 APT 源
+          sudo apt-get install -y wget gnupg
+          # 添加 PostgreSQL 官方 APT 仓库（适用于当前 Ubuntu 版本）
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          # 导入 PostgreSQL 官方 GPG 密钥
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          # 再次更新软件包列表（现在包含 PostgreSQL 17 的源）
+          sudo apt-get update
+          # 安装 PostgreSQL 17 客户端工具（包含 pg_dump, psql, pg_restore 等）
+          sudo apt-get install -y postgresql-client-17 jq
+          # jq 是用于解析 JSON 的命令行工具，后面备份 Edge Functions 时会用到
 
-      - name: 🔧 Install Supabase CLI (for Edge Functions)
+      # 步骤3：安装 Supabase CLI（用于后续可能的管理操作，目前主要用于认证）
+      # 说明：虽然我们使用 API 备份 Edge Functions，但 Supabase CLI 的登录命令可以验证 access token 的有效性
+      - name: 🔧 安装 Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: latest   # 使用最新版本的 CLI
 
-      # ---------- 1. 数据库备份（单文件） ----------
-      - name: 💾 Create backup directory
-        run: mkdir -p backup
+      # ---------- 数据库备份（单文件，包含结构+数据） ----------
+      # 步骤4：创建备份目录
+      - name: 💾 创建备份目录
+        run: mkdir -p backup   # -p 确保目录存在，没有则创建
 
-      - name: 📦 Export full database to a single SQL file
+      # 步骤5：使用 pg_dump 导出完整数据库到一个 SQL 文件
+      - name: 📦 导出完整数据库为单个 SQL 文件
         env:
+          # 从 GitHub Secrets 中读取数据库连接字符串
           DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          # pg_dump 参数说明：
-          # --clean          : 在创建对象前添加 DROP 语句（便于恢复时覆盖）
-          # --if-exists      : 使用 IF EXISTS 避免删除不存在的对象报错
-          # --no-owner       : 不输出 OWNER 语句（避免恢复时权限问题）
-          # --no-privileges  : 不输出权限授予语句（可选，根据需要保留）
-          # --role=postgres  : 设置角色（可选）
-          # --format=plain   : 纯文本 SQL（配合 -f 输出到文件）
-          # -f               : 输出文件
+          # pg_dump 参数详解：
+          # --clean           : 在创建对象前增加 DROP 语句，恢复时会先清除已存在的对象
+          # --if-exists       : 配合 --clean 使用，DROP 时使用 IF EXISTS，避免对象不存在时报错
+          # --no-owner        : 不输出对象所有者信息，恢复时避免权限问题
+          # --no-privileges    : 不输出 GRANT 权限语句，可根据需要保留（若需要还原权限可去掉此参数）
+          # --format=plain    : 输出纯文本 SQL（便于阅读和编辑）
+          # -f                : 指定输出文件路径
           pg_dump "$DATABASE_URL" \
             --clean \
             --if-exists \
@@ -49,91 +76,121 @@ jobs:
             --no-privileges \
             --format=plain \
             -f backup/full_backup.sql
-          
-          # 可选：压缩备份（如果想节省空间，可在此步 tar 打包时一同压缩）
-          echo "✅ Full database backup saved to backup/full_backup.sql"
+          echo "✅ 数据库全量备份完成：backup/full_backup.sql"
 
-      # ---------- 2. 备份 Edge Functions (Management API) ----------
-      - name: 📋 Fetch and download all Edge Functions
+      # ---------- Edge Functions 备份（通过 Supabase Management API） ----------
+      # 步骤6：获取并下载所有 Edge Functions
+      - name: 📋 获取并下载所有 Edge Functions
         env:
+          # 项目引用 ID（从 Supabase 项目 URL 中获取）
           PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          # Personal Access Token（需具有 functions.read 权限）
           ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
+          # 如果任何命令失败，立即退出（便于定位问题）
           set -e
+          
+          # 创建临时目录存放下载的 zip 文件和解压后的源码
           mkdir -p backup/functions_raw backup/functions
+          
+          # Management API 的 Edge Functions 列表接口
           API_URL="https://api.supabase.com/v1/projects/${PROJECT_REF}/functions"
-
-          echo "📡 Fetching functions list from ${API_URL}"
-
+          
+          echo "📡 正在从 ${API_URL} 获取函数列表..."
+          
+          # 发送 GET 请求，同时获取 HTTP 状态码和响应体
+          # -w "\n%{http_code}" 会在输出末尾追加换行和状态码
           RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$API_URL" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}")
+          
+          # 提取状态码（最后一行）
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          # 提取响应体（除最后一行外的所有内容）
           BODY=$(echo "$RESPONSE" | sed '$d')
-
-          echo "HTTP Status: $HTTP_STATUS"
-
+          
+          echo "HTTP 状态码: $HTTP_STATUS"
+          
+          # 检查请求是否成功
           if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "❌ API request failed with status $HTTP_STATUS"
-            echo "Response: $BODY"
+            echo "❌ API 请求失败，状态码 $HTTP_STATUS"
+            echo "响应内容: $BODY"
             exit 1
           fi
-
-          # 提取函数名数组
+          
+          # 使用 jq 解析函数名列表（仅当响应是数组时提取 name 字段）
           FUNCTIONS=$(echo "$BODY" | jq -r 'if type=="array" then .[].name else empty end')
-
+          
+          # 如果没有函数，直接退出（不是错误，可能是项目未部署任何函数）
           if [ -z "$FUNCTIONS" ]; then
-            echo "⚠️ No Edge Functions found."
+            echo "⚠️ 未找到任何 Edge Functions，跳过此步骤。"
             exit 0
           fi
-
-          echo "✅ Found functions: $FUNCTIONS"
-
+          
+          echo "✅ 发现以下函数: $FUNCTIONS"
+          
+          # 遍历每个函数，分别下载其代码 zip 包
           for func in $FUNCTIONS; do
-            echo "⬇️ Downloading function: $func"
+            echo "⬇️ 正在下载函数: $func"
+            # 调用获取函数代码的 API：{function_slug}/body
             curl -s -X GET "$API_URL/${func}/body" \
               -H "Authorization: Bearer ${ACCESS_TOKEN}" \
               -o "backup/functions_raw/${func}.zip"
-
+            
+            # 检查下载的文件是否非空
             if [ -s "backup/functions_raw/${func}.zip" ]; then
+              # 创建该函数的专属子目录
               mkdir -p "backup/functions/${func}"
+              # 解压 zip 包到该目录（-q 静默模式）
               unzip -q "backup/functions_raw/${func}.zip" -d "backup/functions/${func}/"
-              echo "  ✅ Extracted to: backup/functions/${func}/"
+              echo "  ✅ 已解压到: backup/functions/${func}/"
             else
-              echo "  ❌ Failed to download ${func}"
+              echo "  ❌ 下载失败或文件为空: ${func}"
             fi
           done
-
-          # 生成说明文件
+          
+          # 生成一个简单的 README 文件，说明备份内容和时间
           cat > backup/functions/README.md <<EOF
-              # Edge Functions Backup
-              Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-              
-              Functions list:
-              $FUNCTIONS
-              
-              Each directory contains full source code.
-              EOF
+# Edge Functions 备份
+生成时间: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
-      # ---------- 3. 打包所有备份 ----------
-      - name: 🗜️ Create timestamped archive
+函数列表:
+$FUNCTIONS
+
+每个子目录包含对应函数的完整源代码。
+EOF
+
+      # ---------- 打包所有备份文件为一个压缩包 ----------
+      # 步骤7：创建带时间戳的 tar.gz 压缩包
+      - name: 🗜️ 创建带时间戳的压缩包
         run: |
+          # 生成时间戳格式：年月日_时分秒（例如 20251225_143000）
           TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          # 使用 tar 打包 backup 目录并压缩
           tar -czf "supabase_backup_${TIMESTAMP}.tar.gz" backup/
+          # 将压缩包文件名和当前时间戳存入环境变量，供后续步骤使用
           echo "BACKUP_FILE=supabase_backup_${TIMESTAMP}.tar.gz" >> $GITHUB_ENV
           echo "BACKUP_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
 
-      # ---------- 4. 上传到 GitHub Artifacts ----------
-      - name: 💾 Upload backup to GitHub Artifacts
+      # ---------- 上传到 GitHub Artifacts（默认保留30天） ----------
+      # 步骤8：将压缩包作为工作流产出物保存
+      - name: 💾 上传备份到 GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
+          # 产出物名称，包含时间戳以便区分
           name: supabase-backup-${{ env.BACKUP_TIMESTAMP }}
+          # 要上传的文件路径
           path: ${{ env.BACKUP_FILE }}
+          # 保留天数，可根据需要调整（免费计划默认90天）
           retention-days: 30
 
-      # ---------- 5. （可选）自动 commit 到私有仓库 ----------
-      # 警告：仅限私有仓库！不要提交公开仓库。
-      # - name: Commit backup files
+      # ---------- 可选：自动提交到仓库（仅限私有仓库！） ----------
+      # 警告：绝对不要在公开仓库中提交备份文件，因为其中可能包含敏感数据（用户表内容等）。
+      # 如需启用，请将 if: false 改为 if: true，并确保仓库是私有的。
+      # - name: 📝 提交备份文件到仓库
+      #   if: false    # 默认禁用，需要时改为 true
       #   uses: stefanzweifel/git-auto-commit-action@v5
       #   with:
-      #     commit_message: "Supabase full backup - ${{ env.BACKUP_TIMESTAMP }}"
+      #     commit_message: "Supabase 全量备份 - ${{ env.BACKUP_TIMESTAMP }}"
       #     file_pattern: backup/ supabase_backup_*.tar.gz
+      #     commit_user_name: Supabase Backup Bot
+      #     commit_user_email: backup@example.com
