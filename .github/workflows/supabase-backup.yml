@@ -1,117 +1,118 @@
-name: Supabase Full Backup
+name: Supabase Full Backup (Single File)
 
 on:
   schedule:
-    # 每天 UTC 时间 00:00 运行（北京时间早上 8:00）
-    - cron: '0 0 * * *'
-  workflow_dispatch:   # 支持手动触发
+    - cron: '0 0 * * *'   # 每天 UTC 00:00
+  workflow_dispatch:
 
 jobs:
   full-backup:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # 仅当需要自动 commit 时使用，默认注释
+      contents: write      # 仅当需要自动 commit 时使用（默认关闭）
 
     steps:
       - name: 🛒 Checkout repository
         uses: actions/checkout@v4
 
       # ---------- 安装依赖 ----------
-      - name: 🔧 Install Supabase CLI
+      - name: 🔧 Install PostgreSQL client (pg_dump & psql)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 jq
+
+      - name: 🔧 Install Supabase CLI (for Edge Functions)
         uses: supabase/setup-cli@v1
         with:
           version: latest
 
-      - name: 🔧 Install PostgreSQL client (pg_dump)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client-16
-
-      - name: 🔧 Install jq for JSON parsing
-        run: sudo apt-get install -y jq
-
-      # ---------- 1. 备份数据库 (使用 Supabase CLI) ----------
+      # ---------- 1. 数据库备份（单文件） ----------
       - name: 💾 Create backup directory
         run: mkdir -p backup
 
-      - name: 📦 Backup database roles
+      - name: 📦 Export full database to a single SQL file
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" \
-            -f backup/roles.sql --role-only
+          # pg_dump 参数说明：
+          # --clean          : 在创建对象前添加 DROP 语句（便于恢复时覆盖）
+          # --if-exists      : 使用 IF EXISTS 避免删除不存在的对象报错
+          # --no-owner       : 不输出 OWNER 语句（避免恢复时权限问题）
+          # --no-privileges  : 不输出权限授予语句（可选，根据需要保留）
+          # --role=postgres  : 设置角色（可选）
+          # --format=plain   : 纯文本 SQL（配合 -f 输出到文件）
+          # -f               : 输出文件
+          pg_dump "$DATABASE_URL" \
+            --clean \
+            --if-exists \
+            --no-owner \
+            --no-privileges \
+            --format=plain \
+            -f backup/full_backup.sql
+          
+          # 可选：压缩备份（如果想节省空间，可在此步 tar 打包时一同压缩）
+          echo "✅ Full database backup saved to backup/full_backup.sql"
 
-      - name: 📦 Backup database schema
-        run: |
-          supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" \
-            -f backup/schema.sql
-
-      - name: 📦 Backup database data
-        run: |
-          supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" \
-            -f backup/data.sql --data-only --use-copy
-
-      # ---------- 2. 备份 Edge Functions (使用 Management API) ----------
+      # ---------- 2. 备份 Edge Functions (Management API) ----------
       - name: 📋 Fetch and download all Edge Functions
         env:
           PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
+          set -e
           mkdir -p backup/functions_raw backup/functions
           API_URL="https://api.supabase.com/v1/projects/${PROJECT_REF}/functions"
-          
-          echo "📡 Fetching functions list..."
-          FUNCTIONS_RESPONSE=$(curl -s -X GET "$API_URL" \
-              -H "Authorization: Bearer ${ACCESS_TOKEN}")
-          
-          # 检查 API 错误
-          if echo "$FUNCTIONS_RESPONSE" | grep -q '"error"'; then
-            echo "❌ API Error: $FUNCTIONS_RESPONSE"
+
+          echo "📡 Fetching functions list from ${API_URL}"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "$API_URL" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}")
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "HTTP Status: $HTTP_STATUS"
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "❌ API request failed with status $HTTP_STATUS"
+            echo "Response: $BODY"
             exit 1
           fi
-          
-          # 提取函数名列表
-          FUNCTIONS=$(echo "$FUNCTIONS_RESPONSE" | jq -r '.[].name')
-          
-          if [ -z "$FUNCTIONS" ]; then
-            echo "⚠️ No Edge Functions found to backup."
-          else
-            echo "✅ Found functions:"
-            echo "$FUNCTIONS"
-            
-            # 下载并解压每个函数
-            for func in $FUNCTIONS; do
-              echo "⬇️ Downloading function: $func"
-              curl -s -X GET "$API_URL/${func}/body" \
-                  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-                  -o "backup/functions_raw/${func}.zip"
-              
-              if [ -f "backup/functions_raw/${func}.zip" ] && [ -s "backup/functions_raw/${func}.zip" ]; then
-                echo "  ✅ Downloaded: ${func}.zip"
-                mkdir -p "backup/functions/${func}"
-                unzip -q "backup/functions_raw/${func}.zip" -d "backup/functions/${func}/"
-                echo "  📁 Extracted to: backup/functions/${func}/"
-              else
-                echo "  ❌ Failed to download ${func}."
-              fi
-            done
-          fi
-          
-          # 生成函数清单说明文件
-          cat > backup/functions/README.md <<EOF
-            # Edge Functions Backup
-            Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-            
-            Functions list:
-            $FUNCTIONS
-            
-            Each function directory contains its full source code and configuration.
-            EOF
 
-      - name: 📋 Save functions list as plain text
-        run: |
-          echo "Edge Functions list from API" > backup/functions_list.txt
-          date -u >> backup/functions_list.txt
-          echo "-----------------------------" >> backup/functions_list.txt
-          ls -1 backup/functions/ >> backup/functions_list.txt 2>/dev/null || echo "No functions found" >> backup/functions_list.txt
+          # 提取函数名数组
+          FUNCTIONS=$(echo "$BODY" | jq -r 'if type=="array" then .[].name else empty end')
+
+          if [ -z "$FUNCTIONS" ]; then
+            echo "⚠️ No Edge Functions found."
+            exit 0
+          fi
+
+          echo "✅ Found functions: $FUNCTIONS"
+
+          for func in $FUNCTIONS; do
+            echo "⬇️ Downloading function: $func"
+            curl -s -X GET "$API_URL/${func}/body" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              -o "backup/functions_raw/${func}.zip"
+
+            if [ -s "backup/functions_raw/${func}.zip" ]; then
+              mkdir -p "backup/functions/${func}"
+              unzip -q "backup/functions_raw/${func}.zip" -d "backup/functions/${func}/"
+              echo "  ✅ Extracted to: backup/functions/${func}/"
+            else
+              echo "  ❌ Failed to download ${func}"
+            fi
+          done
+
+          # 生成说明文件
+          cat > backup/functions/README.md <<EOF
+              # Edge Functions Backup
+              Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+              
+              Functions list:
+              $FUNCTIONS
+              
+              Each directory contains full source code.
+              EOF
 
       # ---------- 3. 打包所有备份 ----------
       - name: 🗜️ Create timestamped archive
@@ -129,22 +130,9 @@ jobs:
           path: ${{ env.BACKUP_FILE }}
           retention-days: 30
 
-      # ---------- 5. （可选）备份到 S3/R2 ----------
-      # 如需备份到 AWS S3，请取消下面注释并添加对应的 Secrets
-      # - name: 🚀 Upload to S3
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      #     aws-region: us-east-1
-      # - name: 📤 Upload backup to S3
-      #   run: |
-      #     aws s3 cp "${{ env.BACKUP_FILE }}" "s3://your-bucket-name/supabase-backups/${{ env.BACKUP_FILE }}"
-
-      # ---------- 6. （可选）自动 commit 到仓库 ----------
-      # 警告：仅限私有仓库，请勿在公开仓库中提交备份！
+      # ---------- 5. （可选）自动 commit 到私有仓库 ----------
+      # 警告：仅限私有仓库！不要提交公开仓库。
       # - name: Commit backup files
-      #   if: false
       #   uses: stefanzweifel/git-auto-commit-action@v5
       #   with:
       #     commit_message: "Supabase full backup - ${{ env.BACKUP_TIMESTAMP }}"
