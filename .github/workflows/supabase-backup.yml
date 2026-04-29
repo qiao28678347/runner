@@ -1,6 +1,6 @@
 # Supabase 全量备份工作流（数据库 + Edge Functions）
 # 使用官方 Supabase CLI 工具，并启用 CLI 缓存以加速每次构建
-name: Supabase Official Backup
+name: Supabase数据库/云函数备份
 
 on:
   # 定时触发：每天 UTC 00:00（北京时间 08:00）
