@@ -1,0 +1,20 @@
+name: Supabase Backup
+on:
+  
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL Client
+        run: sudo apt install -y postgresql-client
+      - name: Run pg_dump
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # 在仓库Secrets中配置
+        run: |
+          pg_dump "$DB_URL" > backup_$(date +%Y%m%d_%H%M%S).sql
+      - name: Upload Backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-backup
+          path: *.sql
