@@ -1,34 +1,34 @@
-# ==============================================
-# Supabase 全量自动备份（终极版）
-# 解决 pg_dump 版本冲突 ✅ 支持 PostgreSQL 17
-# 手动点击备份 + 每日自动备份
-# ==============================================
-name: Supabase 全量自动备份
-
+name: Supabase 全量备份（数据库 + 在线 Edge Functions）
 on:
+  workflow_dispatch:  # 手动点击备份
   schedule:
     - cron: "0 20 * * *"
-  workflow_dispatch:  # 手动点击备份
 
 jobs:
   backup:
     runs-on: ubuntu-latest
-    container: postgres:17-alpine  # 🔥 强制使用 PG17 客户端，彻底解决版本问题
+    container: postgres:17-alpine
 
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: 安装依赖 zip
-        run: apk add --no-cache zip
+      # 安装依赖
+      - name: 安装依赖
+        run: |
+          apk add --no-cache zip curl nodejs npm
 
+      # 安装 Supabase CLI
+      - name: 安装 Supabase CLI
+        run: npm install -g supabase
+
+      # 生成时间戳
       - name: 生成时间戳
         id: time
         run: echo "timestamp=$(date +%Y-%m-%d_%H-%M-%S)" >> $GITHUB_OUTPUT
 
-      # ==============================================
-      # 数据库全量备份（数据+函数+触发器+视图+约束）
-      # ==============================================
+      # ===============================
+      # 1. 备份数据库（完整）
+      # ===============================
       - name: 备份数据库
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -40,23 +40,27 @@ jobs:
             --encoding=utf8 \
             --if-exists \
             --clean \
-            "$DATABASE_URL" > supabase_db_full_${{ steps.time.outputs.timestamp }}.sql
+            "$DATABASE_URL" > db_${{ steps.time.outputs.timestamp }}.sql
 
-      # ==============================================
-      # 备份云函数
-      # ==============================================
-      - name: 打包云函数
+      # ===============================
+      # 2. 拉取 在线 Edge Functions（真正备份云端函数）
+      # ===============================
+      - name: 备份在线 Edge Functions
+        env:
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
-          if [ -d "./functions" ]; then
-            zip -r supabase_functions_${{ steps.time.outputs.timestamp }}.zip ./functions
-          else
-            touch supabase_functions_${{ steps.time.outputs.timestamp }}.zip
-          fi
+          mkdir -p functions
+          supabase functions pull --project-ref "$SUPABASE_PROJECT_ID"
 
-      # ==============================================
-      # 上传备份文件
-      # ==============================================
-      - name: 上传备份
+      # 打包云端函数
+      - name: 打包函数
+        run: zip -r functions_${{ steps.time.outputs.timestamp }}.zip ./functions
+
+      # ===============================
+      # 3. 上传所有备份
+      # ===============================
+      - name: 上传备份文件
         uses: actions/upload-artifact@v4
         with:
           name: supabase-backup-${{ steps.time.outputs.timestamp }}
