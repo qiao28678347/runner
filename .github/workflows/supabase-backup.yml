@@ -1,4 +1,4 @@
-name: Supabase Backup
+name: Supabase Official Backup
 
 on:
   schedule:
@@ -11,21 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install PostgreSQL 17 client
-        run: |
-          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client-17 jq
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
-      - name: Backup database
+      - name: Backup database (official CLI)
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           mkdir -p backup
-          pg_dump "$DATABASE_URL" --clean --if-exists --no-owner --no-privileges --format=plain -f backup/db.sql
+          supabase db dump --db-url "$DB_URL" -f backup/roles.sql --role-only
+          supabase db dump --db-url "$DB_URL" -f backup/schema.sql
+          supabase db dump --db-url "$DB_URL" -f backup/data.sql --data-only --use-copy
 
-      - name: Backup Edge Functions
+      - name: Backup Edge Functions (official API)
         env:
           PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -36,14 +36,12 @@ jobs:
             curl -s -H "Authorization: Bearer ${TOKEN}" "$API/${func}/body" -o "backup/functions/${func}.zip"
           done
 
-      - name: Create archive
+      - name: Archive and upload
         run: |
           TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
-          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
           tar -czf "supabase_backup_${TIMESTAMP}.tar.gz" backup/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+      - uses: actions/upload-artifact@v4
         with:
           name: supabase-backup-${{ env.TIMESTAMP }}
           path: supabase_backup_*.tar.gz
