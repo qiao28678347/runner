@@ -25,22 +25,39 @@ jobs:
           supabase db dump --db-url "$DB_URL" -f backup/schema.sql
           supabase db dump --db-url "$DB_URL" -f backup/data.sql --data-only --use-copy
 
-      - name: Backup Edge Functions (official API)
+      - name: Backup Edge Functions (official CLI)
         env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
+          # CLI 会自动使用 SUPABASE_ACCESS_TOKEN 环境变量进行认证
           mkdir -p backup/functions
-          API="https://api.supabase.com/v1/projects/${PROJECT_REF}/functions"
-          curl -s -H "Authorization: Bearer ${TOKEN}" "$API" | jq -r '.[].name' | while read func; do
-            curl -s -H "Authorization: Bearer ${TOKEN}" "$API/${func}/body" -o "backup/functions/${func}.zip"
+          
+          # 获取函数列表
+          FUNCTIONS=$(supabase functions list --project-ref "$PROJECT_REF" --output json | jq -r '.[].name')
+          
+          if [ -z "$FUNCTIONS" ]; then
+            echo "No Edge Functions found"
+            exit 0
+          fi
+          
+          # 逐个下载函数（CLI 会下载到 supabase/functions/ 目录）
+          for func in $FUNCTIONS; do
+            echo "Downloading function: $func"
+            supabase functions download "$func" --project-ref "$PROJECT_REF"
           done
+          
+          # 将下载的函数移动到 backup 目录
+          if [ -d "supabase/functions" ]; then
+            cp -r supabase/functions/* backup/functions/
+          fi
 
       - name: Archive and upload
         run: |
           TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
           tar -czf "supabase_backup_${TIMESTAMP}.tar.gz" backup/
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+      
       - uses: actions/upload-artifact@v4
         with:
           name: supabase-backup-${{ env.TIMESTAMP }}
