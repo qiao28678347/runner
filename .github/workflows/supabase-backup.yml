@@ -1,62 +1,108 @@
-name: Supabase 全量备份（DB + Edge Functions）
+name: Supabase Full Backup
+
 on:
-  workflow_dispatch:  # 手动点击备份
   schedule:
-    - cron: "0 20 * * *"
+    # 每天 UTC 时间 00:00 运行（北京时间早上 8:00）
+    # 更多时间: https://crontab.guru/
+    - cron: '0 0 * * *'
+  workflow_dispatch:   # 支持手动触发
 
 jobs:
-  backup:
+  full-backup:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 只用于自动 commit（可选）
+
     steps:
-      - uses: actions/checkout@v4
+      - name: 🛒 Checkout repository
+        uses: actions/checkout@v4
 
-      # 安装依赖（无 npm，无报错）
-      - name: Install dependencies
-        run: sudo apt-get install -y curl zip
+      # ---------- 安装依赖 ----------
+      - name: 🔧 Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
-      # 安装 Supabase CLI 官方方式（无 npm，彻底解决错误）
-      - name: Install Supabase CLI
-        run: |
-          curl -sSL https://supabase.com/cli/install.sh | sh
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      # 生成时间戳
-      - name: Generate timestamp
-        id: time
-        run: echo "timestamp=$(date +%Y-%m-%d_%H-%M-%S)" >> $GITHUB_OUTPUT
-
-      # ===============================
-      # 1. 备份数据库（已修复版本问题）
-      # ===============================
-      - name: Backup full database
+      - name: 🔧 Install PostgreSQL client (pg_dump) on Ubuntu
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          pg_dump "$DB_URL" \
-            --no-owner --no-privileges --clean --if-exists \
-            > db_backup_${{ steps.time.outputs.timestamp }}.sql
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
 
-      # ===============================
-      # 2. 备份云端 Edge Functions（真正可用）
-      # ===============================
-      - name: Backup Edge Functions from Supabase cloud
+      - name: 🔐 Login to Supabase (for Edge Functions)
+        run: supabase login --token ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      # ---------- 1. 备份数据库 ----------
+      - name: 💾 Create backup directory
+        run: mkdir -p backup
+
+      - name: 📦 Backup database roles
+        run: supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" -f backup/roles.sql --role-only
+
+      - name: 📦 Backup database schema
+        run: supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" -f backup/schema.sql
+
+      - name: 📦 Backup database data
+        run: supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" -f backup/data.sql --data-only --use-copy
+
+      # ---------- 2. 备份 Edge Functions ----------
+      - name: 📋 List Edge Functions
         env:
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
-          mkdir -p functions
-          supabase functions pull --project-ref "$SUPABASE_PROJECT_ID"
+          supabase functions list --project-ref $PROJECT_REF | tee backup/functions_list.txt
 
-      - name: Zip Edge Functions
-        run: zip -r functions_${{ steps.time.outputs.timestamp }}.zip ./functions
+      - name: 📦 Download all Edge Functions
+        env:
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          mkdir -p backup/functions
+          FUNCTIONS=$(supabase functions list --project-ref $PROJECT_REF --output json | jq -r '.[].name')
+          
+          if [ -z "$FUNCTIONS" ]; then
+            echo "No Edge Functions found."
+          else
+            for func in $FUNCTIONS; do
+              echo "Downloading function: $func"
+              supabase functions download $func --project-ref $PROJECT_REF
+            done
+            # 移动所有下载的函数到备份文件夹
+            if [ -d "supabase/functions" ]; then
+              cp -r supabase/functions/* backup/functions/
+            fi
+          fi
 
-      # ===============================
-      # 3. 上传备份文件
-      # ===============================
-      - name: Upload all backups
+      - name: 📋 Generate functions manifest
+        run: |
+          echo "# Edge Functions Backup Manifest" > backup/functions/README.md
+          echo "Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> backup/functions/README.md
+          echo "" >> backup/functions/README.md
+          echo "## Functions List" >> backup/functions/README.md
+          cat backup/functions_list.txt >> backup/functions/README.md
+
+      # ---------- 3. 打包所有备份 ----------
+      - name: 🗜️ Create timestamped archive
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+          tar -czf "supabase_backup_${TIMESTAMP}.tar.gz" backup/
+          echo "BACKUP_FILE=supabase_backup_${TIMESTAMP}.tar.gz" >> $GITHUB_ENV
+          echo "BACKUP_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+
+      # ---------- 4. 上传到 GitHub Artifacts ----------
+      - name: 💾 Upload backup to GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: supabase-backup-${{ steps.time.outputs.timestamp }}
-          path: |
-            *.sql
-            *.zip
+          name: supabase-backup-${{ env.BACKUP_TIMESTAMP }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 30
+
+      # ---------- 5. 可选：自动 commit 到仓库 ----------
+      - name: 📝 Commit backup files to repo
+        if: false   # 默认不启用，如需启用请删除此行（注意：切勿备份到公开仓库！）
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Supabase full backup - ${{ env.BACKUP_TIMESTAMP }}"
+          file_pattern: backup/ supabase_backup_*.tar.gz
+          commit_user_name: Supabase Backup Bot
+          commit_user_email: backup@example.com
